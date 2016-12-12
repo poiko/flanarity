@@ -17,5 +17,13 @@
 #include <memory.h>
 #include <tchar.h>
 
+#define GLEW_STATIC
+#include <GL/glew.h>
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <SOIL.h>
+#include <chrono>
+
 
 // TODO: reference additional headers your program requires here

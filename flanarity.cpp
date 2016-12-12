@@ -1,180 +1,299 @@
-// flanarity.cpp : Defines the entry point for the application.
-//
-
 #include "stdafx.h"
 #include "flanarity.h"
 
-#define MAX_LOADSTRING 100
+using namespace std;
 
-// Global Variables:
-HINSTANCE hInst;                                // current instance
-WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
-WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
+static TCHAR winclass[] = _T("flanarityclass");
+static TCHAR wintitle[] = _T("flanarity");
+static HINSTANCE instance;
+static HDC devicectx;
+static HGLRC renderctx;
 
-// Forward declarations of functions included in this code module:
-ATOM                MyRegisterClass(HINSTANCE hInstance);
-BOOL                InitInstance(HINSTANCE, int);
-LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
-INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+GLint uniTime;
 
-int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
-                     _In_opt_ HINSTANCE hPrevInstance,
-                     _In_ LPWSTR    lpCmdLine,
-                     _In_ int       nCmdShow)
+float vertices[] = {
+	-0.5f,  0.5f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+	0.5f,  0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f,
+	0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+	-0.5f, -0.5f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f
+};
+
+GLuint elements[] = {
+	0, 1, 2,
+	2, 3, 0
+};
+
+void LoadTextFile(char *file, const char **data)
 {
-    UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
-
-    // TODO: Place code here.
-
-    // Initialize global strings
-    LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
-    LoadStringW(hInstance, IDC_FLANARITY, szWindowClass, MAX_LOADSTRING);
-    MyRegisterClass(hInstance);
-
-    // Perform application initialization:
-    if (!InitInstance (hInstance, nCmdShow))
-    {
-        return FALSE;
-    }
-
-    HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_FLANARITY));
-
-    MSG msg;
-
-    // Main message loop:
-    while (GetMessage(&msg, nullptr, 0, 0))
-    {
-        if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
-        {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-    }
-
-    return (int) msg.wParam;
+	ifstream f(file);
+	string line, str;
+	while (getline(f, line))
+		str += line + "\n";
+	*data = _strdup(str.c_str());
 }
 
 
-
-//
-//  FUNCTION: MyRegisterClass()
-//
-//  PURPOSE: Registers the window class.
-//
-ATOM MyRegisterClass(HINSTANCE hInstance)
+BOOL OpenGLSetup()
 {
-    WNDCLASSEXW wcex;
+	glewExperimental = GL_TRUE;
+	glewInit();
+	
+	GLuint vao;
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
+	
+	GLuint vbo;
+	glGenBuffers(1, &vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+	
+	GLuint ebo;
+	glGenBuffers(1, &ebo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(elements), elements, GL_STATIC_DRAW);
+	
+	const char *vshdata;
+	LoadTextFile("test.vsh", &vshdata);
+	GLuint vshader = glCreateShader(GL_VERTEX_SHADER);
+	glShaderSource(vshader, 1, &vshdata, nullptr);
+	glCompileShader(vshader);
+	
+	const char *pshdata;
+	LoadTextFile("test.psh", &pshdata);
+	GLuint pshader = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(pshader, 1, &pshdata, nullptr);
+	glCompileShader(pshader);
+	
+	GLuint shprogram = glCreateProgram();
+	glAttachShader(shprogram, vshader);
+	glAttachShader(shprogram, pshader);
+	glBindFragDataLocation(shprogram, 0, "outColor");
+	glLinkProgram(shprogram);
+	glUseProgram(shprogram);
+	
+	GLint posattrib = glGetAttribLocation(shprogram, "position");
+	glEnableVertexAttribArray(posattrib);
+	glVertexAttribPointer(posattrib, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), 0);
+	GLint colattrib = glGetAttribLocation(shprogram, "color");
+	glEnableVertexAttribArray(colattrib);
+	glVertexAttribPointer(colattrib, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void *)(2 * sizeof(float)));
+	GLint texattrib = glGetAttribLocation(shprogram, "texcoord");
+	glEnableVertexAttribArray(texattrib);
+	glVertexAttribPointer(texattrib, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void *)(5 * sizeof(float)));
+	
+	GLuint textures[2];
+	glGenTextures(2, textures);
+	
+	int width, height;
+	unsigned char *image;
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, textures[0]);
+	image = SOIL_load_image("sample.png", &width, &height, 0, SOIL_LOAD_RGB);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+	SOIL_free_image_data(image);
+	glUniform1i(glGetUniformLocation(shprogram, "texKitten"), 0);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, textures[1]);
+	image = SOIL_load_image("sample2.png", &width, &height, 0, SOIL_LOAD_RGB);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+	SOIL_free_image_data(image);
+	glUniform1i(glGetUniformLocation(shprogram, "texPuppy"), 1);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	
+	uniTime = glGetUniformLocation(shprogram, "time");
 
-    wcex.cbSize = sizeof(WNDCLASSEX);
-
-    wcex.style          = CS_HREDRAW | CS_VREDRAW;
-    wcex.lpfnWndProc    = WndProc;
-    wcex.cbClsExtra     = 0;
-    wcex.cbWndExtra     = 0;
-    wcex.hInstance      = hInstance;
-    wcex.hIcon          = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_FLANARITY));
-    wcex.hCursor        = LoadCursor(nullptr, IDC_ARROW);
-    wcex.hbrBackground  = (HBRUSH)(COLOR_WINDOW+1);
-    wcex.lpszMenuName   = MAKEINTRESOURCEW(IDC_FLANARITY);
-    wcex.lpszClassName  = szWindowClass;
-    wcex.hIconSm        = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
-
-    return RegisterClassExW(&wcex);
+	return TRUE;
 }
 
-//
-//   FUNCTION: InitInstance(HINSTANCE, int)
-//
-//   PURPOSE: Saves instance handle and creates main window
-//
-//   COMMENTS:
-//
-//        In this function, we save the instance handle in a global variable and
-//        create and display the main program window.
-//
-BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
+void Render(float time)
 {
-   hInst = hInstance; // Store instance handle in our global variable
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glUniform1f(uniTime, time);
+	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
-   HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
-      CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
-
-   if (!hWnd)
-   {
-      return FALSE;
-   }
-
-   ShowWindow(hWnd, nCmdShow);
-   UpdateWindow(hWnd);
-
-   return TRUE;
+	SwapBuffers(devicectx);
 }
 
-//
-//  FUNCTION: WndProc(HWND, UINT, WPARAM, LPARAM)
-//
-//  PURPOSE:  Processes messages for the main window.
-//
-//  WM_COMMAND  - process the application menu
-//  WM_PAINT    - Paint the main window
-//  WM_DESTROY  - post a quit message and return
-//
-//
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+
+INT_PTR CALLBACK About(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam)
 {
-    switch (message)
-    {
-    case WM_COMMAND:
-        {
-            int wmId = LOWORD(wParam);
-            // Parse the menu selections:
-            switch (wmId)
-            {
-            case IDM_ABOUT:
-                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-                break;
-            case IDM_EXIT:
-                DestroyWindow(hWnd);
-                break;
-            default:
-                return DefWindowProc(hWnd, message, wParam, lParam);
-            }
-        }
-        break;
-    case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            // TODO: Add any drawing code that uses hdc here...
-            EndPaint(hWnd, &ps);
-        }
-        break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        break;
-    default:
-        return DefWindowProc(hWnd, message, wParam, lParam);
-    }
-    return 0;
+	UNREFERENCED_PARAMETER(lparam);
+	switch (msg)
+	{
+		case WM_INITDIALOG:
+			return (INT_PTR)TRUE;
+
+		case WM_COMMAND:
+			if (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL)
+			{
+				EndDialog(dlg, LOWORD(wparam));
+				return (INT_PTR)TRUE;
+			}
+			break;
+	}
+	return (INT_PTR)FALSE;
 }
 
-// Message handler for about box.
-INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+BOOL SetupPixelFormat(HDC dc)
 {
-    UNREFERENCED_PARAMETER(lParam);
-    switch (message)
-    {
-    case WM_INITDIALOG:
-        return (INT_PTR)TRUE;
+	PIXELFORMATDESCRIPTOR pfd;
+	ZeroMemory(&pfd, sizeof(pfd));
+	pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
+	pfd.nVersion = 1;
+	pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+	pfd.iPixelType = PFD_TYPE_RGBA;
+	pfd.cColorBits = 24;
+	pfd.cDepthBits = 16;
 
-    case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
-        {
-            EndDialog(hDlg, LOWORD(wParam));
-            return (INT_PTR)TRUE;
-        }
-        break;
-    }
-    return (INT_PTR)FALSE;
+	int pixelformat = ChoosePixelFormat(dc, &pfd);
+
+	if (pixelformat == 0)
+	{
+		MessageBox(NULL, _T("Call to ChoosePixelFormat failed!"), _T("Error"), 0);
+		return FALSE;
+	}
+
+	if (SetPixelFormat(dc, pixelformat, &pfd) == FALSE)
+	{
+		MessageBox(NULL, _T("Call to SetPixelFormat failed!"), _T("Error"), 0);
+		return FALSE;
+	}
+	
+	return TRUE;
+}
+
+LRESULT CALLBACK WndProc(_In_ HWND wnd, _In_ UINT msg, _In_ WPARAM wparam, _In_ LPARAM lparam)
+{
+	switch (msg)
+	{
+		case WM_CREATE:
+		{
+			devicectx = GetDC(wnd);
+			if (!SetupPixelFormat(devicectx))
+				PostQuitMessage(0);
+			renderctx = wglCreateContext(devicectx);
+			wglMakeCurrent(devicectx, renderctx);
+		} break;
+		
+		case WM_COMMAND:
+		{
+			int wmid = LOWORD(wparam);
+			switch (wmid)
+			{
+			case IDM_ABOUT:
+				DialogBox(instance, MAKEINTRESOURCE(IDD_ABOUTBOX), wnd, About);
+				break;
+			case IDM_EXIT:
+				DestroyWindow(wnd);
+				break;
+			default:
+				return DefWindowProc(wnd, msg, wparam, lparam);
+			}
+		} break;
+		
+		case WM_PAINT:
+		{
+			PAINTSTRUCT ps;
+			HDC hdc = BeginPaint(wnd, &ps);
+			// TODO: Add any drawing code that uses hdc here...
+			EndPaint(wnd, &ps);
+		} break;
+		
+		case WM_CLOSE:
+			if (renderctx)
+				wglDeleteContext(renderctx);
+			if (devicectx)
+				ReleaseDC(wnd, devicectx);
+			renderctx = 0;
+			devicectx = 0;
+			DestroyWindow(wnd);
+			break;
+		
+		case WM_DESTROY:
+			if (renderctx)
+				wglDeleteContext(renderctx);
+			if (devicectx)
+				ReleaseDC(wnd, devicectx);
+			PostQuitMessage(0);
+			break;
+		
+		default:
+			return DefWindowProc(wnd, msg, wparam, lparam);
+			break;
+	}
+
+	return 0;
+}
+
+int APIENTRY wWinMain(_In_ HINSTANCE inst, _In_opt_ HINSTANCE previnst, _In_ LPWSTR cmdline, _In_ int cmdshow)
+{
+    UNREFERENCED_PARAMETER(previnst);
+    UNREFERENCED_PARAMETER(cmdline);
+
+	instance = inst;
+
+	WNDCLASSEX wcex;
+	ZeroMemory(&wcex, sizeof(wcex));
+	wcex.cbSize = sizeof(WNDCLASSEX);
+	wcex.style = CS_HREDRAW | CS_VREDRAW;
+	wcex.lpfnWndProc = WndProc;
+	wcex.hInstance = inst;
+	wcex.hIcon = LoadIcon(inst, MAKEINTRESOURCE(IDI_FLANARITY));
+	wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	wcex.lpszMenuName = MAKEINTRESOURCEW(IDC_FLANARITY);
+	wcex.lpszClassName = winclass;
+	wcex.hIconSm = LoadIcon(inst, MAKEINTRESOURCE(IDI_SMALL));
+
+	if (!RegisterClassEx(&wcex))
+	{
+		MessageBox(nullptr, _T("Call to RegisterClassEx failed!"), _T("Error"), 0);
+		return FALSE;
+	}
+
+	HWND wnd = CreateWindowW(winclass, wintitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
+		nullptr, nullptr, inst, nullptr);
+	if (!wnd)
+	{
+		MessageBox(nullptr, _T("Call to CreateWindow failed!"), _T("Error"), 0);
+		return FALSE;
+	}
+
+	if (!OpenGLSetup())
+		return FALSE;
+
+	ShowWindow(wnd, cmdshow);
+	UpdateWindow(wnd);
+
+	auto t_start = chrono::high_resolution_clock::now();
+
+	HACCEL acceltable = LoadAccelerators(inst, MAKEINTRESOURCE(IDC_FLANARITY));
+	MSG msg = { 0 };
+	while (msg.message != WM_QUIT)
+	{
+		if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+		{
+			if (!TranslateAccelerator(msg.hwnd, acceltable, &msg))
+			{
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+		}
+		else
+		{
+			auto t_now = chrono::high_resolution_clock::now();
+			float time = chrono::duration_cast<chrono::duration<float>>(t_now - t_start).count();
+			Render(time);
+		}
+	}
+
+	return (int)msg.wParam;
 }
