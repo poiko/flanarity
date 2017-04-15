@@ -1,0 +1,14 @@
+#version 150
+
+in vec2 out_pos;
+in vec2 out_mid;
+//in vec3 color;
+
+out vec4 out_color;
+
+void main()
+{
+	vec2 diff = out_pos-out_mid;
+    float d = 10*sqrt(dot(diff, diff));
+    out_color = vec4(1.0-d, 0.0, 0.0, 1.0);
+}
