@@ -21,6 +21,8 @@ static HINSTANCE instance;
 static HDC devicectx;
 static HGLRC renderctx;
 
+int selected_node = -1;
+
 
 INT_PTR CALLBACK NewGameDlg(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -33,7 +35,30 @@ INT_PTR CALLBACK NewGameDlg(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam)
 			if (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL)
 			{
 				if (LOWORD(wparam) == IDOK)
-					NewGame(100);
+					NewGame();
+				EndDialog(dlg, LOWORD(wparam));
+				return (INT_PTR)TRUE;
+			}
+			break;
+	}
+	return (INT_PTR)FALSE;
+}
+
+INT_PTR CALLBACK SettingsDlg(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+	switch (msg)
+	{
+		case WM_INITDIALOG:
+			return (INT_PTR)TRUE;
+
+		case WM_COMMAND:
+			if (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL)
+			{
+				if (LOWORD(wparam) == IDOK)
+				{
+					
+					UpdateSettings();
+				}					
 				EndDialog(dlg, LOWORD(wparam));
 				return (INT_PTR)TRUE;
 			}
@@ -109,6 +134,9 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				case IDM_NEWGAME:
 					DialogBox(instance, MAKEINTRESOURCE(IDD_NEWGAME), wnd, NewGameDlg);
 					break;
+				case IDM_SETTINGS:
+					DialogBox(instance, MAKEINTRESOURCE(IDD_SETTINGS), wnd, SettingsDlg);
+					break;
 				case IDM_ABOUT:
 					DialogBox(instance, MAKEINTRESOURCE(IDD_ABOUTBOX), wnd, AboutDlg);
 					break;
@@ -120,6 +148,42 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			}
 		} break;
 
+		case WM_LBUTTONDOWN:
+		{
+			int xpos = (short)(lparam & 0xffff);
+			int ypos = (short)(lparam >> 16);
+			float nodex = (float)(xpos - g_clientwidth*0.5f)*2.0f / g_clientheight;
+			float nodey = (float)(ypos - g_clientheight*0.5f)*2.0f / g_clientheight;
+			selected_node = FindNode(nodex, nodey);
+			if (selected_node != -1)
+				printf("selected node: %d\n", selected_node);
+		} break;
+
+		case WM_LBUTTONUP:
+			selected_node = -1;
+			break;
+
+		case WM_MOUSEMOVE:
+			if ((wparam == MK_LBUTTON) && (selected_node != -1))
+			{
+				int xpos = (short)(lparam & 0xffff);
+				int ypos = (short)(lparam >> 16);
+				float nodex = (float)(xpos - g_clientwidth*0.5f)*2.0f / g_clientheight;
+				float nodey = (float)(ypos - g_clientheight*0.5f)*2.0f / g_clientheight;
+				SetNode(selected_node, nodex, nodey);
+			}
+			break;
+
+		case WM_SIZE:
+		{
+			g_clientwidth = lparam & 0xffff;
+			g_clientheight = lparam >> 16;
+			RECT r;
+			GetWindowRect(wnd, &r);
+			g_winwidth = r.right - r.left;
+			g_winheight = r.bottom - r.top;
+		} break;
+		
 		case WM_CLOSE:
 			if (MessageBox(NULL, _T("Really quit???"), _T("Pfff"), MB_OKCANCEL) == IDOK)
 			{
@@ -157,6 +221,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE previnst, LPWSTR cmdline, int cm
 	
 	instance = inst;
 
+	InitSettings(configfile);
+
 	WNDCLASSEX wcex;
 	ZeroMemory(&wcex, sizeof(wcex));
 	wcex.cbSize = sizeof(WNDCLASSEX);
@@ -176,7 +242,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE previnst, LPWSTR cmdline, int cm
 		return FALSE;
 	}
 
-	HWND wnd = CreateWindowW(winclass, wintitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
+	HWND wnd = CreateWindowW(winclass, wintitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, g_winwidth, g_winheight,
 		nullptr, nullptr, inst, nullptr);
 	if (!wnd)
 	{
@@ -184,14 +250,18 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE previnst, LPWSTR cmdline, int cm
 		return FALSE;
 	}
 
+	RECT r;
+	GetClientRect(wnd, &r);
+	g_clientwidth = r.right - r.left;
+	g_clientheight = r.bottom - r.top;
+
 	if (!InitGame())
 		return FALSE;
 
 	ShowWindow(wnd, cmdshow);
 	UpdateWindow(wnd);
 
-	InitSettings(configfile);
-	NewGame(100);
+	NewGame();
 
 	HACCEL acceltable = LoadAccelerators(inst, MAKEINTRESOURCE(IDC_FLANARITY));
 	MSG msg = { 0 };

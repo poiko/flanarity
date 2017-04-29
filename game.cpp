@@ -4,56 +4,73 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#define _USE_MATH_DEFINES
+#include <math.h>
 
 #include "game.h"
 
-const int DEFAULT_NUMVERTS = 100;
-const int DEFAULT_VERTSIZE = 10;
+const int DEFAULT_WINWIDTH = 1024;
+const int DEFAULT_WINHEIGHT = 768;
+const int DEFAULT_FIELDWIDTH = 1024;
+const int DEFAULT_FIELDHEIGHT = 768;
+const int DEFAULT_NUMNODES = 100;
+const int DEFAULT_NODESIZE = 20;
 
+#define SQR(x) ((x)*(x))
 
-struct vertex
+struct vbovertex
 {
 	float x, y;
+	float midx, midy;
 };
 
-struct edge
-{
-	int v1, v2;
-};
 
-struct geometry
-{
-	GLuint vao;
-	int numvertices;
-	vertex *vertices;
-	GLuint vertvbo;
-	int numedges;
-	edge *edges;
-};
+int g_numnodes;
+node *g_nodes = nullptr;
+int g_numedges;
+edge *g_edges = nullptr;
 
-settings game_settings;
-geometry game_geometry;
-bool game_active;
+GLuint g_nodevao, g_edgevao;
+GLuint g_vertbuf[2];	//vertex + index
+GLuint g_linebuf;		//index
+GLuint g_nodeprog, g_edgeprog;
+GLint g_nodeprogaspect, g_edgeprogaspect;
+GLint g_nodeprogsize2;
 
-void LoadTextFile(char *file, const char **data)
+int g_winwidth, g_winheight;
+int g_clientwidth, g_clientheight;
+int g_fieldwidth, g_fieldheight;
+int g_nodesize;
+
+bool g_active;
+
+using namespace std;
+
+string LoadTextFile(const char *file)
 {
-	std::ifstream f(file);
-	std::string line, str;
-	while (std::getline(f, line))
+	ifstream f(file);
+	string line, str;
+	while (getline(f, line))
 		str += line + "\n";
-	*data = _strdup(str.c_str());
+	return str;
 }
 
 void InitSettings(const char *cfgfile)
 {
-	game_settings.numverts = DEFAULT_NUMVERTS;
-	game_settings.vertsize = DEFAULT_VERTSIZE;
+	g_winwidth = DEFAULT_WINWIDTH;
+	g_winheight = DEFAULT_WINHEIGHT;
+	g_clientwidth = DEFAULT_WINWIDTH;
+	g_clientheight = DEFAULT_WINHEIGHT;
+	g_fieldwidth = DEFAULT_FIELDWIDTH;
+	g_fieldheight = DEFAULT_FIELDHEIGHT;
+	g_numnodes = DEFAULT_NUMNODES;
+	g_nodesize = DEFAULT_NODESIZE;
 
 	char key[64];
 	char value[64];
-	std::ifstream f(cfgfile);
-	std::string line;
-	while (std::getline(f, line))
+	ifstream f(cfgfile);
+	string line;
+	while (getline(f, line))
 	{
 		int len = line.length();
 		int i = 0;
@@ -79,20 +96,64 @@ void InitSettings(const char *cfgfile)
 			value[j++] = line[i++];
 		value[j] = 0;
 
-		if (!strcmp(key, "numverts"))
-			game_settings.numverts = atoi(value);
-		else if (!strcmp(key, "vertsize"))
-			game_settings.vertsize = atoi(value);
+		if (!strcmp(key, "numnodes"))
+			g_numnodes = atoi(value);
+		else if (!strcmp(key, "nodesize"))
+			g_nodesize = atoi(value);
 		//etc
 	}
 }
 
+void UpdateSettings()
+{
+}
+
 void SaveSettings(const char *cfgfile)
 {
-	std::ofstream f(cfgfile);
+	ofstream f(cfgfile);
+	f << "numnodes = " << g_numnodes << endl;
+	f << "nodesize = " << g_nodesize << endl;
+}
 
-	f << "numverts = " << game_settings.numverts << std::endl;
-	f << "vertsize = " << game_settings.vertsize << std::endl;
+int CreateShaderProgram(char *vfile, char *pfile)
+{
+	char infobuf[512];
+
+	string vshstr = LoadTextFile(vfile);
+	const char *vshdata = vshstr.c_str();
+	GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+	glShaderSource(vs, 1, &vshdata, nullptr);
+	glCompileShader(vs);
+
+	GLint status;
+	glGetShaderiv(vs, GL_COMPILE_STATUS, &status);
+	if (status != GL_TRUE)
+		printf("Vertex shader compile failed!\n");
+	glGetShaderInfoLog(vs, sizeof(infobuf), nullptr, infobuf);
+	printf("%s", infobuf);
+
+	string pshstr = LoadTextFile(pfile);
+	const char *pshdata = pshstr.c_str();
+	GLuint ps = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(ps, 1, &pshdata, nullptr);
+	glCompileShader(ps);
+
+	glGetShaderiv(ps, GL_COMPILE_STATUS, &status);
+	if (status != GL_TRUE)
+		printf("Pixel shader compile failed!\n");
+	glGetShaderInfoLog(ps, sizeof(infobuf), nullptr, infobuf);
+	printf("%s", infobuf);
+
+	GLuint prog = glCreateProgram();
+	glAttachShader(prog, vs);
+	glAttachShader(prog, ps);
+	glBindFragDataLocation(prog, 0, "out_color");
+	glLinkProgram(prog);
+
+	glDeleteShader(vs);
+	glDeleteShader(ps);
+
+	return prog;
 }
 
 bool InitGame()
@@ -100,127 +161,118 @@ bool InitGame()
 	glewExperimental = GL_TRUE;
 	glewInit();
 
-	GLuint vao;
-	glGenVertexArrays(1, &vao);
-	glBindVertexArray(vao);
-	game_geometry.vao = vao;	
-	glGenBuffers(1, &game_geometry.vertvbo);
+	glGenVertexArrays(1, &g_nodevao);
+	glGenVertexArrays(1, &g_edgevao);
+	glGenBuffers(2, g_vertbuf);
+	glGenBuffers(1, &g_linebuf);
 
-	const char *vshdata;
-	LoadTextFile("flanarity.vsh", &vshdata);
-	GLuint vshader = glCreateShader(GL_VERTEX_SHADER);
-	glShaderSource(vshader, 1, &vshdata, nullptr);
-	glCompileShader(vshader);
+	g_nodeprog = CreateShaderProgram("node.vsh", "node.psh");
+	g_nodeprogaspect = glGetUniformLocation(g_nodeprog, "aspect");
+	g_nodeprogsize2 = glGetUniformLocation(g_nodeprog, "size2");
+	glBindVertexArray(g_nodevao);
+	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_vertbuf[1]);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), 0);
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void *)(2 * sizeof(float)));
+	glBindVertexArray(0);
 
-	GLint status;
-	glGetShaderiv(vshader, GL_COMPILE_STATUS, &status);
-	if (status != GL_TRUE)
-		printf("Vertex shader compile failed!\n");
-	char buffer[512];
-	glGetShaderInfoLog(vshader, 512, NULL, buffer);
-	printf("%s\n", buffer);
+	g_edgeprog = CreateShaderProgram("edge.vsh", "edge.psh");
+	g_edgeprogaspect = glGetUniformLocation(g_edgeprog, "aspect");
+	glBindVertexArray(g_edgevao);
+	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_linebuf);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), 0);
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void *)(2 * sizeof(float)));
+	glBindVertexArray(0);
 
-	const char *pshdata;
-	LoadTextFile("flanarity.psh", &pshdata);
-	GLuint pshader = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(pshader, 1, &pshdata, nullptr);
-	glCompileShader(pshader);
-
-	glGetShaderiv(pshader, GL_COMPILE_STATUS, &status);
-	if (status != GL_TRUE)
-		printf("Pixel shader compile failed!\n");
-	glGetShaderInfoLog(pshader, 512, NULL, buffer);
-	printf("%s\n", buffer);
-
-	GLuint shprogram = glCreateProgram();
-	glAttachShader(shprogram, vshader);
-	glAttachShader(shprogram, pshader);
-	glBindFragDataLocation(shprogram, 0, "out_color");
-	glLinkProgram(shprogram);
-	glUseProgram(shprogram);
-	
-	glBindBuffer(GL_ARRAY_BUFFER, game_geometry.vertvbo);
-	GLint posattrib = glGetAttribLocation(shprogram, "in_pos");
-	glVertexAttribPointer(posattrib, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), 0);
-	glEnableVertexAttribArray(posattrib);
-	GLint midattrib = glGetAttribLocation(shprogram, "in_mid");
-	glVertexAttribPointer(midattrib, 2, GL_FLOAT, GL_FALSE, 4*sizeof(float), (void *)(2 * sizeof(float)));
-	glEnableVertexAttribArray(midattrib);
-
-	//GLint colattrib = glGetAttribLocation(shprogram, "color");
-	//glVertexAttribPointer(colattrib, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)(2 * sizeof(float)));
-	//glEnableVertexAttribArray(colattrib);
-
-	game_active = false;
+	g_active = false;
 
 	return true;
 }
 
-
-struct vbovertex
+static void NodeQuad(float x, float y, float size, vbovertex *quad)
 {
-	float x, y;
-	float midx, midy;
-};
-
-void NewGame(int numverts)
-{
-	delete game_geometry.vertices;
-	delete game_geometry.edges;
-	numverts = 3;
-	vertex *verts = new vertex[numverts];
-	
-	verts[0].x = -0.5f;
-	verts[0].y = -0.5f;
-	verts[1].x = 0.5f;
-	verts[1].y = -0.5f;
-	verts[2].x = 0;
-	verts[2].y = 0.5f;
-
-	int numedges = 3;
-	edge *edges = new edge[numedges];
-	edges[0].v1 = 0;
-	edges[0].v2 = 1;
-	edges[1].v1 = 1;
-	edges[1].v2 = 2;
-	edges[2].v1 = 2;
-	edges[2].v2 = 0;
-
-	vbovertex *vboverts = new vbovertex[numverts*6];
-	for (int i=0; i<numverts; i++)
+	quad[0].x = x - size;
+	quad[0].y = y - size;
+	quad[1].x = x + size;
+	quad[1].y = y - size;
+	quad[2].x = x + size;
+	quad[2].y = y + size;
+	quad[3].x = x - size;
+	quad[3].y = y + size;
+	for (int i=0; i<4; i++)
 	{
-		vboverts[i*6+0].x = verts[i].x - 0.1f;
-		vboverts[i*6+0].y = verts[i].y - 0.1f;
-		vboverts[i*6+1].x = verts[i].x + 0.1f;
-		vboverts[i*6+1].y = verts[i].y - 0.1f;
-		vboverts[i*6+2].x = verts[i].x + 0.1f;
-		vboverts[i*6+2].y = verts[i].y + 0.1f;
+		quad[i].midx = x;
+		quad[i].midy = y;
+	}
+}
 
-		vboverts[i*6+3].x = verts[i].x - 0.1f;
-		vboverts[i*6+3].y = verts[i].y - 0.1f;
-		vboverts[i*6+4].x = verts[i].x + 0.1f;
-		vboverts[i*6+4].y = verts[i].y + 0.1f;
-		vboverts[i*6+5].x = verts[i].x - 0.1f;
-		vboverts[i*6+5].y = verts[i].y + 0.1f;
-
-		for (int j=0; j<6; j++)
-		{
-			vboverts[i*6+j].midx = verts[i].x;
-			vboverts[i*6+j].midy = verts[i].y;
-		}
+void NewGame()
+{
+	if (g_nodes)
+		delete[] g_nodes;
+	if (g_edges)
+		delete[] g_edges;
+	
+	//generate graph
+	g_numnodes = 30;
+	g_nodes = new node[g_numnodes];
+	
+//	int gridwidth = (int)sqrt(g_numnodes);
+		
+	for (int i=0; i<g_numnodes; i++)
+	{
+		g_nodes[i].x = (float)cos((float)i*2.0*M_PI/g_numnodes) * 0.9f;
+		g_nodes[i].y = (float)sin((float)i*2.0*M_PI/g_numnodes) * 0.9f;
 	}
 
-	glBindBuffer(GL_ARRAY_BUFFER, game_geometry.vertvbo);
-	glBufferData(GL_ARRAY_BUFFER, numverts*sizeof(vbovertex)*6, vboverts, GL_DYNAMIC_DRAW);
+	g_numedges = g_numnodes;
+	g_edges = new edge[g_numedges];
+	for (int i=0; i<g_numedges; i++)
+	{
+		g_edges[i].n1 = i;
+		g_edges[i].n2 = (i+500)%g_numnodes;
+	}
 
-//	delete vboverts;
+	//build indices for vertex quads and lines
+	vbovertex *vboverts = new vbovertex[g_numnodes*4];
+	GLuint *vindices = new GLuint[g_numnodes*6];
+	float vertsize = (float)g_nodesize/g_clientheight;
+	for (int i=0; i<g_numnodes; i++)
+	{
+		NodeQuad(g_nodes[i].x, g_nodes[i].y, vertsize, &vboverts[i*4]);
+	
+		vindices[i*6+0] = i*4+0;
+		vindices[i*6+1] = i*4+1;
+		vindices[i*6+2] = i*4+2;
+		vindices[i*6+3] = i*4+0;
+		vindices[i*6+4] = i*4+2;
+		vindices[i*6+5] = i*4+3;
+	}
 
-	game_geometry.vertices = verts;
-	game_geometry.numvertices = numverts;
-	game_geometry.edges = edges;
-	game_geometry.numedges = numedges;
+	GLuint *lindices = new GLuint[g_numedges*2];
+	for (int i=0; i<g_numedges; i++)
+	{
+		lindices[i*2+0] = g_edges[i].n1*4;
+		lindices[i*2+1] = g_edges[i].n2*4;
+	}
 
-	game_active = true;
+	//upload data to gpu
+	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
+	glBufferData(GL_ARRAY_BUFFER, 4*g_numnodes*sizeof(vbovertex), vboverts, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_vertbuf[1]);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, 6*g_numnodes*sizeof(GLuint), vindices, GL_STATIC_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_linebuf);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, 2*g_numedges*sizeof(GLuint), lindices, GL_STATIC_DRAW);
+	delete[] lindices;
+	delete[] vindices;
+	delete[] vboverts;
+
+	g_active = true;
 }
 
 void SaveGame(const char *gamefile)
@@ -231,22 +283,51 @@ void LoadGame(const char *gamefile)
 {
 }
 
-static void RenderVertices()
-{
-	glDrawArrays(GL_TRIANGLES, 0, game_geometry.numvertices*6);
-}
-
-static void RenderEdges()
-{
-}
-
 void RenderGame()
 {
-	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
 
-	if (game_active)
+	if (g_active)
 	{
-		RenderEdges();
-		RenderVertices();
+		//render edges
+		glUseProgram(g_edgeprog);
+		glUniform1f(g_edgeprogaspect, (float)g_clientwidth/g_clientheight);
+		glBindVertexArray(g_edgevao);
+		glDrawElements(GL_LINES, g_numedges*2, GL_UNSIGNED_INT, 0);
+		glBindVertexArray(0);
+		
+		//render nodes
+		glUseProgram(g_nodeprog);
+		glUniform1f(g_nodeprogaspect, (float)g_clientwidth/g_clientheight);
+		glUniform1f(g_nodeprogsize2, SQR((float)g_nodesize/g_clientheight));
+		glBindVertexArray(g_nodevao);
+		glDrawElements(GL_TRIANGLES, g_numnodes*6, GL_UNSIGNED_INT, 0);
+		glBindVertexArray(0);
 	}
+}
+
+int FindNode(float x, float y)
+{
+	//TODO: speed up
+	float nodesize2 = SQR((float)g_nodesize/g_clientheight);
+	for (int i=0; i<g_numnodes; i++)
+	{
+		node *n = &g_nodes[i];
+		if (SQR(n->x - x) + SQR(n->y - y) < nodesize2)
+			return i;
+	}
+	return -1;
+}
+
+void SetNode(int n, float x, float y)
+{
+	vbovertex nodequad[4];
+	NodeQuad(x, y, (float)g_nodesize/g_clientheight, nodequad);
+		
+	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
+	glBufferSubData(GL_ARRAY_BUFFER, n*4*sizeof(vbovertex), 4*sizeof(vbovertex), &nodequad);
+	
+	g_nodes[n].x = x;
+	g_nodes[n].y = y;
 }

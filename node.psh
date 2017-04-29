@@ -1,0 +1,15 @@
+#version 330
+
+in vec2 pos;
+in vec2 mid;
+
+out vec4 out_color;
+
+uniform float size2;
+
+void main()
+{
+	vec2 delta = pos - mid;
+    float mask = sign(size2 - dot(delta, delta));
+    out_color = vec4(0.0, 0.0, 0.0, mask);
+}
