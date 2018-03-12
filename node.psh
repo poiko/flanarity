@@ -6,10 +6,11 @@ in vec2 mid;
 out vec4 out_color;
 
 uniform float size2;
+uniform vec3 color;
 
 void main()
 {
 	vec2 delta = pos - mid;
     float mask = sign(size2 - dot(delta, delta));
-    out_color = vec4(0.0, 0.0, 0.0, mask);
+    out_color = vec4(0.5, 0.3, 0.7, mask);
 }

@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <windowsx.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
@@ -75,12 +76,13 @@ INT_PTR CALLBACK AboutDlg(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam)
 			return (INT_PTR)TRUE;
 
 		case WM_COMMAND:
+		{
 			if (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL)
 			{
 				EndDialog(dlg, LOWORD(wparam));
 				return (INT_PTR)TRUE;
 			}
-			break;
+		} break;
 	}
 	return (INT_PTR)FALSE;
 }
@@ -150,26 +152,32 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 		case WM_LBUTTONDOWN:
 		{
-			int xpos = (short)(lparam & 0xffff);
-			int ypos = (short)(lparam >> 16);
-			float nodex = (float)(xpos - g_clientwidth*0.5f)*2.0f / g_clientheight;
-			float nodey = (float)(ypos - g_clientheight*0.5f)*2.0f / g_clientheight;
+			int xpos = GET_X_LPARAM(lparam);
+			int ypos = GET_Y_LPARAM(lparam);
+			float nodex = (float)(xpos - g_clientwidth/2.0f + g_clientposx);
+			float nodey = (float)(ypos - g_clientheight/2.0f + g_clientposy);
 			selected_node = FindNode(nodex, nodey);
 			if (selected_node != -1)
 				printf("selected node: %d\n", selected_node);
 		} break;
 
 		case WM_LBUTTONUP:
-			selected_node = -1;
+			if (selected_node != -1)
+			{
+				UpdateNodeTangle(selected_node);
+				if (CheckUntangled())
+					printf("untangled!\n");
+				selected_node = -1;
+			}
 			break;
 
 		case WM_MOUSEMOVE:
 			if ((wparam == MK_LBUTTON) && (selected_node != -1))
 			{
-				int xpos = (short)(lparam & 0xffff);
-				int ypos = (short)(lparam >> 16);
-				float nodex = (float)(xpos - g_clientwidth*0.5f)*2.0f / g_clientheight;
-				float nodey = (float)(ypos - g_clientheight*0.5f)*2.0f / g_clientheight;
+				int xpos = GET_X_LPARAM(lparam);
+				int ypos = GET_Y_LPARAM(lparam);
+				float nodex = (float)(xpos - g_clientwidth/2.0f + g_clientposx);
+				float nodey = (float)(ypos - g_clientheight/2.0f + g_clientposy);
 				SetNode(selected_node, nodex, nodey);
 			}
 			break;
@@ -215,9 +223,10 @@ LRESULT CALLBACK WndProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
 
 int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE previnst, LPWSTR cmdline, int cmdshow)
 {
+	FILE *out;
 	AllocConsole();
-	freopen("CONOUT$", "w", stdout);
-	freopen("CONOUT$", "w", stderr);  	
+	freopen_s(&out, "CONOUT$", "w", stdout);
+	freopen_s(&out, "CONOUT$", "w", stderr);  	
 	
 	instance = inst;
 

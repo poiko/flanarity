@@ -11,40 +11,71 @@
 
 const int DEFAULT_WINWIDTH = 1024;
 const int DEFAULT_WINHEIGHT = 768;
-const int DEFAULT_FIELDWIDTH = 1024;
-const int DEFAULT_FIELDHEIGHT = 768;
-const int DEFAULT_NUMNODES = 100;
+const int DEFAULT_FIELDWIDTH = 2*1024;
+const int DEFAULT_FIELDHEIGHT = 2*768;
+const int DEFAULT_NUMNODES = 10000;
 const int DEFAULT_NODESIZE = 20;
+
+const int MAX_NODELINKS = 4;
 
 #define SQR(x) ((x)*(x))
 
-struct vbovertex
+struct VBOVertex
 {
 	float x, y;
 	float midx, midy;
 };
 
-
 int g_numnodes;
-node *g_nodes = nullptr;
+Node *g_nodes = nullptr;
 int g_numedges;
-edge *g_edges = nullptr;
+Edge *g_edges = nullptr;
+int *g_nodelinks = nullptr;
+bool *g_nodeuntangled = nullptr;
 
 GLuint g_nodevao, g_edgevao;
 GLuint g_vertbuf[2];	//vertex + index
 GLuint g_linebuf;		//index
 GLuint g_nodeprog, g_edgeprog;
+GLint g_nodeprogcpos, g_nodeprogcsize;
+GLint g_edgeprogcpos, g_edgeprogcsize;
 GLint g_nodeprogaspect, g_edgeprogaspect;
 GLint g_nodeprogsize2;
+GLint g_nodeprogcolor;
 
 int g_winwidth, g_winheight;
-int g_clientwidth, g_clientheight;
+
+//client window into playfield
+int g_clientposx, g_clientposy;
+int g_clientwidth, g_clientheight;	
+
+//virtual playfield
 int g_fieldwidth, g_fieldheight;
+
 int g_nodesize;
 
 bool g_active;
 
 using namespace std;
+
+
+inline Node operator+(Node &lhs, const Node &rhs)
+{
+	lhs += rhs;
+	return lhs;
+}
+
+inline Node operator-(Node &lhs, const Node &rhs)
+{
+	lhs -= rhs;
+	return lhs;
+}
+
+inline float operator*(Node &lhs, const Node &rhs)
+{
+	return lhs.x*rhs.x + lhs.y*rhs.y;
+}
+
 
 string LoadTextFile(const char *file)
 {
@@ -59,8 +90,8 @@ void InitSettings(const char *cfgfile)
 {
 	g_winwidth = DEFAULT_WINWIDTH;
 	g_winheight = DEFAULT_WINHEIGHT;
-	g_clientwidth = DEFAULT_WINWIDTH;
-	g_clientheight = DEFAULT_WINHEIGHT;
+	g_clientposx = 0;
+	g_clientposy = 0;
 	g_fieldwidth = DEFAULT_FIELDWIDTH;
 	g_fieldheight = DEFAULT_FIELDHEIGHT;
 	g_numnodes = DEFAULT_NUMNODES;
@@ -167,8 +198,12 @@ bool InitGame()
 	glGenBuffers(1, &g_linebuf);
 
 	g_nodeprog = CreateShaderProgram("node.vsh", "node.psh");
-	g_nodeprogaspect = glGetUniformLocation(g_nodeprog, "aspect");
+	g_nodeprogcpos = glGetUniformLocation(g_nodeprog, "clientpos");
+	g_nodeprogcsize = glGetUniformLocation(g_nodeprog, "clientsize");
+	g_nodeprogaspect = glGetUniformLocation(g_nodeprog, "invaspect");
 	g_nodeprogsize2 = glGetUniformLocation(g_nodeprog, "size2");
+	g_nodeprogcolor = glGetUniformLocation(g_nodeprog, "color");
+
 	glBindVertexArray(g_nodevao);
 	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_vertbuf[1]);
@@ -179,7 +214,10 @@ bool InitGame()
 	glBindVertexArray(0);
 
 	g_edgeprog = CreateShaderProgram("edge.vsh", "edge.psh");
-	g_edgeprogaspect = glGetUniformLocation(g_edgeprog, "aspect");
+	g_edgeprogcpos = glGetUniformLocation(g_edgeprog, "clientpos");
+	g_edgeprogcsize = glGetUniformLocation(g_edgeprog, "clientsize");
+	g_edgeprogaspect = glGetUniformLocation(g_edgeprog, "invaspect");
+
 	glBindVertexArray(g_edgevao);
 	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_linebuf);
@@ -194,7 +232,7 @@ bool InitGame()
 	return true;
 }
 
-static void NodeQuad(float x, float y, float size, vbovertex *quad)
+static void NodeQuad(float x, float y, float size, VBOVertex *quad)
 {
 	quad[0].x = x - size;
 	quad[0].y = y - size;
@@ -213,33 +251,55 @@ static void NodeQuad(float x, float y, float size, vbovertex *quad)
 
 void NewGame()
 {
-	if (g_nodes)
-		delete[] g_nodes;
-	if (g_edges)
-		delete[] g_edges;
+	delete[] g_nodes;
+	delete[] g_edges;
 	
 	//generate graph
-	g_numnodes = 30;
-	g_nodes = new node[g_numnodes];
+	g_numnodes = 10;
+	g_nodes = new Node[g_numnodes];
 	
-//	int gridwidth = (int)sqrt(g_numnodes);
-		
+	//int gridwidth = (int)sqrt(g_numnodes);
+
 	for (int i=0; i<g_numnodes; i++)
-	{
-		g_nodes[i].x = (float)cos((float)i*2.0*M_PI/g_numnodes) * 0.9f;
-		g_nodes[i].y = (float)sin((float)i*2.0*M_PI/g_numnodes) * 0.9f;
-	}
+		g_nodes[i] = Node((float)cos((float)i*2.0*M_PI/g_numnodes) * g_fieldwidth*0.9f/2.0f,
+						  (float)sin((float)i*2.0*M_PI/g_numnodes) * g_fieldheight*0.9f/2.0f);
 
 	g_numedges = g_numnodes;
-	g_edges = new edge[g_numedges];
+	g_edges = new Edge[g_numedges];
 	for (int i=0; i<g_numedges; i++)
 	{
-		g_edges[i].n1 = i;
-		g_edges[i].n2 = (i+500)%g_numnodes;
+		g_edges[i].n[0] = i;
+		g_edges[i].n[1] = (i+g_numnodes/2)%g_numnodes;
 	}
 
+	//build nodelinks
+	g_nodelinks = new int[g_numnodes*MAX_NODELINKS];
+	memset(g_nodelinks, -1, g_numnodes*MAX_NODELINKS*4);
+	for (int i=0; i<g_numedges; i++)
+	{
+		for (int j=0; j<2; j++)
+		{
+			int n = g_edges[i].n[j];
+			int k;
+			for (k=0; k<MAX_NODELINKS; k++)
+				if (g_nodelinks[n*4+k] == -1)
+					break;
+			if (k == MAX_NODELINKS)
+			{
+				printf("Too many links for node %d!\n", n);
+				continue;
+			}
+			g_nodelinks[n*4+k] = g_edges[i].n[j^1];
+		}
+	}
+
+	//set untangled state
+	g_nodeuntangled = new bool[g_numnodes];
+	for (int i=0; i<g_numnodes; i++)
+		g_nodeuntangled[i] = false;
+
 	//build indices for vertex quads and lines
-	vbovertex *vboverts = new vbovertex[g_numnodes*4];
+	VBOVertex *vboverts = new VBOVertex[g_numnodes*4];
 	GLuint *vindices = new GLuint[g_numnodes*6];
 	float vertsize = (float)g_nodesize/g_clientheight;
 	for (int i=0; i<g_numnodes; i++)
@@ -257,13 +317,13 @@ void NewGame()
 	GLuint *lindices = new GLuint[g_numedges*2];
 	for (int i=0; i<g_numedges; i++)
 	{
-		lindices[i*2+0] = g_edges[i].n1*4;
-		lindices[i*2+1] = g_edges[i].n2*4;
+		lindices[i*2+0] = g_edges[i].n[0]*4;
+		lindices[i*2+1] = g_edges[i].n[1]*4;
 	}
 
 	//upload data to gpu
 	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
-	glBufferData(GL_ARRAY_BUFFER, 4*g_numnodes*sizeof(vbovertex), vboverts, GL_DYNAMIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, 4*g_numnodes*sizeof(VBOVertex), vboverts, GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_vertbuf[1]);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, 6*g_numnodes*sizeof(GLuint), vindices, GL_STATIC_DRAW);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_linebuf);
@@ -292,28 +352,38 @@ void RenderGame()
 	{
 		//render edges
 		glUseProgram(g_edgeprog);
-		glUniform1f(g_edgeprogaspect, (float)g_clientwidth/g_clientheight);
+		glUniform2f(g_edgeprogcpos, (float)g_clientposx, (float)g_clientposy);
+		glUniform2f(g_edgeprogcsize, g_clientwidth/2.0f, g_clientheight/2.0f);
+		glUniform1f(g_edgeprogaspect, (float)g_clientheight/g_clientwidth);
 		glBindVertexArray(g_edgevao);
 		glDrawElements(GL_LINES, g_numedges*2, GL_UNSIGNED_INT, 0);
 		glBindVertexArray(0);
 		
 		//render nodes
 		glUseProgram(g_nodeprog);
-		glUniform1f(g_nodeprogaspect, (float)g_clientwidth/g_clientheight);
+		glUniform2f(g_nodeprogcpos, (float)g_clientposx, (float)g_clientposy);
+		glUniform2f(g_nodeprogcsize, g_clientwidth/2.0f, g_clientheight/2.0f);
+		glUniform1f(g_nodeprogaspect, (float)g_clientheight/g_clientwidth);
 		glUniform1f(g_nodeprogsize2, SQR((float)g_nodesize/g_clientheight));
+//		glUniform3fv(g_nodeprogcolor, g_nodecolor);
 		glBindVertexArray(g_nodevao);
 		glDrawElements(GL_TRIANGLES, g_numnodes*6, GL_UNSIGNED_INT, 0);
 		glBindVertexArray(0);
+
+		//post process
+		//glUseProgram(g_postprog);
+		//glBindVertexArray(g_postvao);
+		//glDrawArrays(GL_TRIANGLES);
+		//glBindVertexArray
 	}
 }
 
 int FindNode(float x, float y)
 {
-	//TODO: speed up
-	float nodesize2 = SQR((float)g_nodesize/g_clientheight);
+	int nodesize2 = SQR(g_nodesize);
 	for (int i=0; i<g_numnodes; i++)
 	{
-		node *n = &g_nodes[i];
+		Node *n = &g_nodes[i];
 		if (SQR(n->x - x) + SQR(n->y - y) < nodesize2)
 			return i;
 	}
@@ -322,12 +392,43 @@ int FindNode(float x, float y)
 
 void SetNode(int n, float x, float y)
 {
-	vbovertex nodequad[4];
-	NodeQuad(x, y, (float)g_nodesize/g_clientheight, nodequad);
-		
+	VBOVertex nodequad[4];
+	NodeQuad(x, y, (float)g_nodesize, nodequad);
+	
 	glBindBuffer(GL_ARRAY_BUFFER, g_vertbuf[0]);
-	glBufferSubData(GL_ARRAY_BUFFER, n*4*sizeof(vbovertex), 4*sizeof(vbovertex), &nodequad);
+	glBufferSubData(GL_ARRAY_BUFFER, n*4*sizeof(VBOVertex), 4*sizeof(VBOVertex), &nodequad);
 	
 	g_nodes[n].x = x;
 	g_nodes[n].y = y;
+}
+
+void UpdateNodeTangle(int node)
+{
+	for (int i=0; i<4; i++)
+	{
+		Node v = g_nodes[g_nodelinks[node*MAX_NODELINKS+i]] - g_nodes[node];
+		for (int j=0; j<g_numedges; j++)
+		{
+			int n0 = g_edges[j].n[0];
+			int n1 = g_edges[j].n[1];
+			if ((node == n0) || (node == n1))
+				continue;
+			Node p1 = g_nodes[n0] - g_nodes[node];
+			Node p2 = g_nodes[n1] - g_nodes[node];
+			if ((p1*v) * (p2*v) < 0)
+			{
+				g_nodeuntangled[node] = false;
+				return;
+			}
+		}
+	}
+	g_nodeuntangled[node] = true;
+}
+
+bool CheckUntangled()
+{
+	for (int i=0; i<g_numnodes; i++)
+		if (!g_nodeuntangled[i])
+			return false;
+	return true;
 }
